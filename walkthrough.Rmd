@@ -19,6 +19,11 @@ The folder `./data` contains one game of optical player tracking data from the 2
 dat = read.csv("./data/2013_11_01_MIA_BRK_formatted.csv")
 head(dat)
 ```
+```{r, new}
+unique_entities_only_df <- dat %>% 
+  distinct(entity, .keep_all = TRUE)
+```
+
 
 We also source some utility functions that will be used in the walkthrough.  These functions include Algorithm 1 from the paper and functions used to get the initial states and shot clock times for each team's set of plays and the empirical distribution of time lapses between on-ball events. 
 
@@ -53,17 +58,22 @@ BRK_initial_states <- get_initial_states(dat, "BRK")
 shot_clock_dist <- get_sc_dist(dat = dat, num_intervals = 3)
 ```
 
+
 We can now simulate each team's plays in this game for a chosen number of simulations.  We'll simulate the game 100 times.  
 
-```{r}
+```{r, testing Simulation Chunk}
 n_sim = 100
 
+# Create empty lists for Miami and Brooklyn
+MIA_results_list <- list()
+BRK_results_list <- list()
+
 # MIAMI SIMULATIONS
-MIA_points = NA
-for(iter in 1:n_sim){
-  for(play in 1:nrow(MIA_initial_states)) {
+for (iter in 1:n_sim) {
+  game_moments_MIA <- NULL
+  for (play in 1:nrow(MIA_initial_states)) {
     if (play == 1) {
-      game_moments_MIA = algorithm_1(
+      game_moments_MIA <- algorithm_1(
         s_0 = MIA_initial_states[play, "state"],
         c_0 = MIA_initial_states[play, "shot_clock"],
         theta_draws = theta_draws,
@@ -74,7 +84,7 @@ for(iter in 1:n_sim){
         num_mcmc = n_draws
       )
     } else {
-      game_moments_MIA = rbind(
+      game_moments_MIA <- rbind(
         game_moments_MIA,
         algorithm_1(
           s_0 = MIA_initial_states[play, "state"],
@@ -89,15 +99,15 @@ for(iter in 1:n_sim){
       )
     }
   }
-  MIA_points[iter] = sum(game_moments_MIA$reward)
+  MIA_results_list[[iter]] <- game_moments_MIA
 }
 
 # BROOKLYN SIMULATIONS
-BRK_points = NA
-for(iter in 1:n_sim){
-  for(play in 1:nrow(BRK_initial_states)) {
+for (iter in 1:n_sim) {
+  game_moments_BRK <- NULL
+  for (play in 1:nrow(BRK_initial_states)) {
     if (play == 1) {
-      game_moments_BRK = algorithm_1(
+      game_moments_BRK <- algorithm_1(
         s_0 = BRK_initial_states[play, "state"],
         c_0 = BRK_initial_states[play, "shot_clock"],
         theta_draws = theta_draws,
@@ -108,7 +118,7 @@ for(iter in 1:n_sim){
         num_mcmc = n_draws
       )
     } else {
-      game_moments_BRK = rbind(
+      game_moments_BRK <- rbind(
         game_moments_BRK,
         algorithm_1(
           s_0 = BRK_initial_states[play, "state"],
@@ -123,24 +133,247 @@ for(iter in 1:n_sim){
       )
     }
   }
-  BRK_points[iter] = sum(game_moments_BRK$reward)
+  BRK_results_list[[iter]] <- game_moments_BRK
 }
+
+```
+
+
+Creating a dataframe for each team with all outputs of each simulation
+```{r, Complete Dataframe}
+library(dplyr)
+library(ggplot2)
+
+# Combine the list of data frames into one data frame for Miami
+MIA_combined_noName <- bind_rows(MIA_results_list, .id = "simulation")
+
+# Combine the list of data frames into one data frame for Brooklyn
+BRK_combined_noName <- bind_rows(BRK_results_list, .id = "simulation")
+```
+
+Data cleaning
+```{r, Cleaning}
+library(tidyr)
+MIA_combined_noName <- MIA_combined_noName %>% 
+  # If the 'state' is 'turnover', replace with 'turnover_turnover_turnover'
+  mutate(state = ifelse(state == "turnover", "turnover_turnover_turnover", state)) %>%
+  # Separate the 'state' column into three new columns
+  separate(state, into = c("entity", "region", "contested"), sep = "_", fill = "right") %>%
+  # Replace 'turnover_turnover_turnover' back with 'turnover' in each column
+  mutate(across(c(entity, region, contested), ~ifelse(. == "turnover", "turnover", .)))
+
+MIA_combined_noName$entity <- as.integer(replace(MIA_combined_noName$entity, MIA_combined_noName$entity == "turnover", NA))
+
+
+
+BRK_combined_noName <- BRK_combined_noName %>% 
+  # If the 'state' is 'turnover', replace with 'turnover_turnover_turnover'
+  mutate(state = ifelse(state == "turnover", "turnover_turnover_turnover", state)) %>%
+  # Separate the 'state' column into three new columns
+  separate(state, into = c("entity", "region", "contested"), sep = "_", fill = "right") %>%
+  # Replace 'turnover_turnover_turnover' back with 'turnover' in each column
+  mutate(across(c(entity, region, contested), ~ifelse(. == "turnover", "turnover", .)))
+
+BRK_combined_noName$entity <- as.integer(replace(BRK_combined_noName$entity, BRK_combined_noName$entity == "turnover", NA))
+```
+
+This chunk adds the players names into the dataframe for better visualizations
+```{r, Joining Names}
+MIA_combined <- MIA_combined_noName %>%
+  left_join(unique_entities_only_df %>% select(entity, firstname, lastname), by = "entity")
+
+BRK_combined <- BRK_combined_noName %>%
+  left_join(unique_entities_only_df %>% select(entity, firstname, lastname), by = "entity")
+```
+
+Combining first and last name into one column
+```{r, cleaning}
+MIA_combined$fullname <- paste(MIA_combined$firstname, MIA_combined$lastname)
+BRK_combined$fullname <- paste(BRK_combined$firstname, BRK_combined$lastname)
+```
+
+
+```{r, Average Reward for each player}
+shots_data <- filter(MIA_combined, action == 1)
+
+# Bar plot of the average reward for each player
+average_rewards_by_name <- shots_data %>%
+  group_by(fullname) %>%
+  summarise(average_reward = mean(reward)) %>%
+  arrange(desc(average_reward))
+
+ggplot(average_rewards_by_name, aes(y = reorder(fullname, -average_reward), x = average_reward)) +
+  geom_bar(stat = "identity", fill = "blue", color = "black") +
+  theme_minimal() +
+  labs(
+    title = '             Average Reward for Each Player (Shots Only)',
+    y = 'Player',
+    x = 'Average Reward'
+  ) +
+  theme(
+    axis.text.y = element_text(size = 10, face = "bold"), 
+    axis.title.y = element_blank(), 
+    legend.position = "none"
+  )
+```
+```{r}
+# Count plot of shots taken by each player
+total_shots_by_player <- shots_data %>%
+  group_by(fullname) %>%
+  summarise(total_shots = n())
+
+#  calculate the average shots per game
+#  each player participates in each of the 100 simulations
+average_shots_per_game <- total_shots_by_player %>%
+  mutate(average_shots = total_shots / 100) %>%
+  arrange(desc(average_shots))
+
+#  horizontal bar plot with the average shots per game for each player
+ggplot(average_shots_per_game, aes(y = reorder(fullname, average_shots), x = average_shots)) +
+  geom_bar(stat = "identity", fill = "blue",color = "black") +
+  theme_minimal() +
+  labs(
+    title = '              Average Shots Per Game Taken by Each Player',
+    y = 'Player',
+    x = 'Average Shots per Game'
+  ) +
+  theme(
+    axis.text.y = element_text(size = 10, face = "bold"), 
+    axis.title.y = element_blank(), 
+    legend.position = "none" 
+  )
+```
+
+```{r}
+ggplot(shots_data, aes(x=region, y=reward)) +
+  geom_boxplot() +
+  labs(title="                                        Box Plot of Reward per Region", x="Region", y="Reward") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+```{r}
+
+shots_by_region <- shots_data %>%
+  group_by(fullname, region) %>%
+  summarise(total_shots = n()) %>%
+  mutate(average_shots = total_shots / 100) %>%
+  select(-total_shots) %>%
+  spread(key = region, value = average_shots, fill = 0)
+
+# Count the number of contested and open shots by each player and calculate the average per game
+shots_by_contested <- shots_data %>%
+  group_by(fullname, contested) %>%
+  summarise(total_shots = n()) %>%
+  mutate(average_shots = total_shots / 100) %>%
+  select(-total_shots) %>%
+  spread(key = contested, value = average_shots, fill = 0)
+
+# Calculate the average made (reward > 0) and missed (reward == 0) shots per game for each player
+shots_made_missed <- shots_data %>%
+  group_by(fullname) %>%
+  summarise(made = sum(reward > 0), missed = sum(reward == 0)) %>%
+  mutate(average_made = made / 100, average_missed = missed / 100) %>%
+  select(fullname, average_made, average_missed)
+
+# Combine all the dataframes
+final_table <- left_join(shots_by_region, shots_by_contested, by = "fullname") %>%
+  left_join(shots_made_missed, by = "fullname")
+
+# Add a column for average total shots per game
+final_table$average_total_shots <- final_table$average_made + final_table$average_missed
+
+# Select the order of columns to include the averages
+final_table <- final_table %>%
+  select(fullname, long2, paint, three, contested, open, average_total_shots)
+
+final_table <- final_table %>%
+  arrange(desc(average_total_shots))
+
+total_row <- final_table %>%
+  ungroup() %>% 
+  summarise(across(where(is.numeric), sum, na.rm = TRUE), .groups = 'drop')
+
+# Add a 'fullname' column to the total_row with the value "Total"
+total_row$fullname <- "Total"
+
+# Bind the total_row to the original final_table
+final_table_with_total <- bind_rows(final_table, total_row)
+
+# Output the table with the new total row
+final_table_with_total
+```
+
+
+```{r}
+average_shot_clock_per_play <- MIA_combined %>%
+  filter(action != 0 | is.na(action)) %>%
+  group_by(play) %>%
+  summarise(average_shot_clock = mean(shot_clock, na.rm = TRUE))
+
+ggplot(average_shot_clock_per_play, aes(x = play, y = average_shot_clock)) +
+  geom_smooth() +  
+  theme_minimal() +
+  labs(title = "Average Shot Clock Time at the End of Each Play",
+       x = "Play",
+       y = "Average Shot Clock Time") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+
+
+```{r}
+average_shots_time_intervals <- MIA_combined %>%
+  filter(action == 1) %>%
+  group_by(time_int, contested) %>%
+  summarise(shots = n()) %>%
+  ungroup() %>%
+  spread(key = contested, value = shots, fill = 0) %>%
+  mutate(average_open_shots = `open` / 100,
+         average_contested_shots = contested / 100) %>%
+  select(time_int, average_open_shots, average_contested_shots) %>%
+  arrange(time_int)
+
+# Create a line plot for average number of open and contested shots across time intervals
+ggplot(average_shots_time_intervals, aes(x = time_int)) +
+  geom_line(aes(y = average_open_shots, color = "Open Shots")) + 
+  geom_line(aes(y = average_contested_shots, color = "Contested Shots")) +
+  scale_color_manual(values = c("Open Shots" = "blue", "Contested Shots" = "red")) +
+  theme_minimal() +
+  labs(title = "Average Number of Open and Contested Shots Across Time Intervals",
+       x = "Time Interval",
+       y = "Average Number of Shots") +
+  theme(plot.title = element_text(hjust = 0.5),
+        legend.title = element_blank()) 
+```
+```{r}
+MIA_combined %>%
+  ggplot(aes(x = shot_clock, fill = as.factor(action))) +
+  geom_histogram(binwidth = 1, position = "identity", alpha = 0.6) +
+  labs(x = "Shot Clock Time", y = "Count", fill = "Action", title = "Shot Clock Utilization") +
+  theme_minimal()
 ```
 
 We can plot density estimates of our simulations and compare these to the empirical total points from these plays in the data.  Dotted vertical lines represent each team's observed total points from the filtered plays from this game.  
 
 ```{r}
-# Compare simulations to empirical
-plot(density(MIA_points), col = "red", 
+MIA_points <- MIA_combined %>%
+  group_by(simulation) %>%
+  summarize(total_points = sum(reward))
+
+# Now for Brooklyn (BRK)
+BRK_points <- BRK_combined %>%
+  group_by(simulation) %>%
+  summarize(total_points = sum(reward))
+
+# Create the density plots
+plot(density(MIA_points$total_points), col = "red", 
      main = "Simulations: MIA vs BRK",
      xlab = "Points")
-dat %>% filter(team == "MIA") %>% with(abline(v = sum(points), 
-                                              col = "red",
-                                              lty = 2))
+abline(v = mean(MIA_points$total_points), col = "red", lty = 2)
 
-lines(density(BRK_points))
-dat %>% filter(team == "BRK") %>% with(abline(v = sum(points),
-                                              lty = 2))
+lines(density(BRK_points$total_points))
+abline(v = mean(BRK_points$total_points), lty = 2)
+
 legend("topleft", c("Brooklyn", "Miami"),
        col = c("black", "red"),
        lwd = 2, bg = NA)
@@ -183,11 +416,15 @@ altered_theta_draws = alter_theta(theta_draws,
                                   altered_policy_rules = policy_change)
 
 # MIAMI ALTERED SIMULATIONS
-MIA_points_alt = NA
-for(iter in 1:n_sim){
-  for(play in 1:nrow(MIA_initial_states)) {
+MIA_alt1_results_list <- list()
+
+
+# MIAMI SIMULATIONS
+for (iter in 1:n_sim) {
+  game_moments_MIA <- NULL
+  for (play in 1:nrow(MIA_initial_states)) {
     if (play == 1) {
-      game_moments_MIA = algorithm_1(
+      game_moments_MIA <- algorithm_1(
         s_0 = MIA_initial_states[play, "state"],
         c_0 = MIA_initial_states[play, "shot_clock"],
         theta_draws = altered_theta_draws,
@@ -198,7 +435,7 @@ for(iter in 1:n_sim){
         num_mcmc = n_draws
       )
     } else {
-      game_moments_MIA = rbind(
+      game_moments_MIA <- rbind(
         game_moments_MIA,
         algorithm_1(
           s_0 = MIA_initial_states[play, "state"],
@@ -213,18 +450,798 @@ for(iter in 1:n_sim){
       )
     }
   }
-  MIA_points_alt[iter] = sum(game_moments_MIA$reward)
+  MIA_alt1_results_list[[iter]] <- game_moments_MIA
 }
 
-plot(density(MIA_points), col = "red", 
+```
+
+```{r}
+# Combine the list of data frames into one data frame for Miami
+MIA_alt1_combined_noName <- bind_rows(MIA_alt1_results_list, .id = "simulation")
+```
+
+
+```{r}
+MIA_alt1_combined_noName <- MIA_alt1_combined_noName %>% 
+  # If the 'state' is 'turnover', replace with 'turnover_turnover_turnover'
+  mutate(state = ifelse(state == "turnover", "turnover_turnover_turnover", state)) %>%
+  # Separate the 'state' column into three new columns
+  separate(state, into = c("entity", "region", "contested"), sep = "_", fill = "right") %>%
+  # Replace 'turnover_turnover_turnover' back with 'turnover' in each column
+  mutate(across(c(entity, region, contested), ~ifelse(. == "turnover", "turnover", .)))
+
+MIA_alt1_combined_noName$entity <- as.integer(replace(MIA_alt1_combined_noName$entity, MIA_alt1_combined_noName$entity == "turnover", NA))
+
+```
+
+```{r}
+MIA_alt1_combined <- MIA_alt1_combined_noName %>%
+  left_join(unique_entities_only_df %>% select(entity, firstname, lastname), by = "entity")
+```
+
+```{r}
+MIA_alt1_combined$fullname <- paste(MIA_alt1_combined$firstname, MIA_alt1_combined$lastname)
+```
+
+```{r}
+MIA_alt1_points <- MIA_alt1_combined %>%
+  group_by(simulation) %>%
+  summarize(total_points = sum(reward))
+
+plot(density(MIA_points$total_points), col = "red", 
      main = "Simulations: MIA vs BRK",
      xlab = "Points")
-lines(density(BRK_points))
-lines(density(MIA_points_alt), col = "blue")
+lines(density(BRK_points$total_points))
+lines(density(MIA_alt1_points$total_points), col = "blue")
 legend("topleft", c("Brooklyn", "Miami", "Miami-alt"),
        col = c("black", "red", "blue"),
        lwd = 2)
 ```
- 
-Miami's projected distribution of possible scores increases.
+
+```{r}
+shots_data_alt1 <- filter(MIA_alt1_combined, action == 1)
+
+# Bar plot of the average reward for each player in the new dataset
+average_rewards_by_name_alt1 <- shots_data_alt1 %>%
+  group_by(fullname) %>%
+  summarise(average_reward_alt1 = mean(reward)) %>%
+  arrange(desc(average_reward_alt1))
+
+# Merge the new and old average reward data
+combined_averages_alt1 <- left_join(average_rewards_by_name, average_rewards_by_name_alt1, by = "fullname")
+
+# Plot the combined data
+ggplot() +
+  geom_bar(data = average_rewards_by_name, aes(y = reorder(fullname, -average_reward), x = average_reward), stat="identity", fill="blue") +
+  geom_point(data = combined_averages_alt1, aes(y = fullname, x = average_reward_alt1), color="red") +
+  theme_minimal() +
+  labs(title='        Average Reward for Each Player (Shots Only)', y='Player', x='Average Reward') +
+  theme(legend.position="none", axis.text.y = element_text(size = 7))
+```
+
+```{r}
+# Count plot of shots taken by each player in the new dataset
+total_shots_by_player_alt1 <- filter(MIA_alt1_combined, action == 1) %>%
+  group_by(fullname) %>%
+  summarise(total_shots_alt1 = n())
+
+# calculate the average shots per game for the new dataset
+# each player participates in each of the 100 simulations
+average_shots_per_game_alt1 <- total_shots_by_player_alt1 %>%
+  mutate(average_shots_alt1 = total_shots_alt1 / 100) %>%
+  arrange(desc(average_shots_alt1))
+
+# Combine the new and old average shots per game data
+combined_average_shots_alt1 <- left_join(average_shots_per_game, average_shots_per_game_alt1, by = "fullname")
+
+# Plot the combined data
+ggplot() +
+  geom_bar(data = average_shots_per_game, aes(y = reorder(fullname, -average_shots), x = average_shots), stat="identity", fill="blue") +
+  geom_point(data = combined_average_shots_alt1, aes(y = fullname, x = average_shots_alt1), color="red", shape = 17, size = 3) +
+  theme_minimal() +
+  labs(title='Average Shots Per Game Taken by Each Player', y='Player', x='Average Shots per Game') +
+  theme(axis.text.y = element_text(size = 7),
+        axis.title.y = element_blank(),
+        legend.position="none")
+```
+
+```{r}
+average_shot_clock_per_play_alt1 <- MIA_alt1_combined %>%
+  filter(action != 0 | is.na(action)) %>%
+  group_by(play) %>%
+  summarise(average_shot_clock_alt1 = mean(shot_clock, na.rm = TRUE))
+
+
+ggplot() +
+  geom_smooth(data = average_shot_clock_per_play, aes(x = play, y = average_shot_clock), color = "blue") +
+  geom_smooth(data = average_shot_clock_per_play_alt1, aes(x = play, y = average_shot_clock_alt1), color = "red") +
+  theme_minimal() +
+  labs(title = "Average Shot Clock Time at the End of Each Play",
+       x = "Play",
+       y = "Average Shot Clock Time") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+```
+
+
+```{r}
+
+shots_by_region_alt <- shots_data_alt1 %>%
+  group_by(fullname, region) %>%
+  summarise(total_shots = n()) %>%
+  mutate(average_shots = total_shots / 100) %>%
+  select(-total_shots) %>%
+  spread(key = region, value = average_shots, fill = 0)
+
+# Count the number of contested and open shots by each player and calculate the average per game
+shots_by_contested <- shots_data_alt1 %>%
+  group_by(fullname, contested) %>%
+  summarise(total_shots = n()) %>%
+  mutate(average_shots = total_shots / 100) %>%
+  select(-total_shots) %>%
+  spread(key = contested, value = average_shots, fill = 0)
+
+# Calculate the average made (reward > 0) and missed (reward == 0) shots per game for each player
+shots_made_missed <- shots_data_alt1 %>%
+  group_by(fullname) %>%
+  summarise(made = sum(reward > 0), missed = sum(reward == 0)) %>%
+  mutate(average_made = made / 100, average_missed = missed / 100) %>%
+  select(fullname, average_made, average_missed)
+
+# Combine all the dataframes
+final_table <- left_join(shots_by_region_alt, shots_by_contested, by = "fullname") %>%
+  left_join(shots_made_missed, by = "fullname")
+
+# Add a column for average total shots per game
+final_table$average_total_shots <- final_table$average_made + final_table$average_missed
+
+# Select the order of columns to include the averages
+final_table <- final_table %>%
+  select(fullname, long2, paint, three, contested, open, average_total_shots)
+
+final_table <- final_table %>%
+  arrange(desc(average_total_shots))
+
+total_row <- final_table %>%
+  ungroup() %>%  
+  summarise(across(where(is.numeric), sum, na.rm = TRUE), .groups = 'drop')
+
+# Add a 'fullname' column to the total_row with the value "Total"
+total_row$fullname <- "Total"
+
+# Bind the total_row to the original final_table
+final_table_with_total <- bind_rows(final_table, total_row)
+
+# Output the table with the new total row
+final_table_with_total
+```
+
+## Altering polocies 2. This time we will decrease long2 by 40% and increase shots in the paint by 40%
+
+```{r}
+
+
+# Identify MIA players
+MIA_players = dat %>%
+  filter(team == "MIA") %>%
+  distinct(entity) %>%
+  pull(entity)
+
+# Identify states to alter
+# 1) ALL Midrange shots
+to_alter_1 = c(paste(MIA_players, "long2_contested", sep = "_"),
+             paste(MIA_players, "long2_open", sep = "_"))
+
+to_alter_2 = c(paste(MIA_players, "paint_contested", sep = "_"),
+               paste(MIA_players, "paint_open", sep = "_"))
+  
+
+policy_change <- list(list(who_where = to_alter_1,
+                                        when = 2:3,
+                                        how_much = .6),
+                                   list(who_where = to_alter_2,
+                                        when = 1:3,
+                                        how_much = 1.4)
+                                   )
+
+# Alter the posterior draws of theta
+altered_theta_draws = alter_theta(theta_draws, 
+                                  altered_policy_rules = policy_change)
+
+# MIAMI ALTERED SIMULATIONS
+MIA_alt2_results_list <- list()
+
+
+# MIAMI SIMULATIONS
+for (iter in 1:n_sim) {
+  game_moments_MIA <- NULL
+  for (play in 1:nrow(MIA_initial_states)) {
+    if (play == 1) {
+      game_moments_MIA <- algorithm_1(
+        s_0 = MIA_initial_states[play, "state"],
+        c_0 = MIA_initial_states[play, "shot_clock"],
+        theta_draws = altered_theta_draws,
+        mu_draws = mu_draws,
+        xi_draws = xi_draws,
+        lambda_draws = lambda_MIA_draws,
+        L_dist = shot_clock_dist,
+        num_mcmc = n_draws
+      )
+    } else {
+      game_moments_MIA <- rbind(
+        game_moments_MIA,
+        algorithm_1(
+          s_0 = MIA_initial_states[play, "state"],
+          c_0 = MIA_initial_states[play, "shot_clock"],
+          theta_draws = altered_theta_draws,
+          mu_draws = mu_draws,
+          xi_draws = xi_draws,
+          lambda_draws = lambda_MIA_draws,
+          L_dist = shot_clock_dist,
+          num_mcmc = n_draws
+        )
+      )
+    }
+  }
+  MIA_alt2_results_list[[iter]] <- game_moments_MIA
+}
+
+```
+
+```{r}
+# Combine the list of data frames into one data frame for Miami
+MIA_alt2_combined_noName <- bind_rows(MIA_alt2_results_list, .id = "simulation")
+```
+
+
+```{r}
+MIA_alt2_combined_noName <- MIA_alt2_combined_noName %>% 
+  # If the 'state' is 'turnover', replace with 'turnover_turnover_turnover'
+  mutate(state = ifelse(state == "turnover", "turnover_turnover_turnover", state)) %>%
+  # Separate the 'state' column into three new columns
+  separate(state, into = c("entity", "region", "contested"), sep = "_", fill = "right") %>%
+  # Replace 'turnover_turnover_turnover' back with 'turnover' in each column
+  mutate(across(c(entity, region, contested), ~ifelse(. == "turnover", "turnover", .)))
+
+MIA_alt2_combined_noName$entity <- as.integer(replace(MIA_alt2_combined_noName$entity, MIA_alt2_combined_noName$entity == "turnover", NA))
+
+```
+
+```{r}
+MIA_alt2_combined <- MIA_alt2_combined_noName %>%
+  left_join(unique_entities_only_df %>% select(entity, firstname, lastname), by = "entity")
+```
+
+```{r}
+MIA_alt2_combined$fullname <- paste(MIA_alt2_combined$firstname, MIA_alt2_combined$lastname)
+```
+
+```{r}
+MIA_alt2_points <- MIA_alt2_combined %>%
+  group_by(simulation) %>%
+  summarize(total_points = sum(reward))
+
+plot(density(MIA_points$total_points), col = "red", 
+     main = "Simulations: MIA vs BRK",
+     xlab = "Points")
+lines(density(BRK_points$total_points))
+lines(density(MIA_alt2_points$total_points), col = "blue")
+legend("topleft", c("Brooklyn", "Miami", "Miami-alt"),
+       col = c("black", "red", "blue"),
+       lwd = 2)
+```
+
+```{r}
+shots_data_alt2 <- filter(MIA_alt2_combined, action == 1)
+
+# Bar plot of the average reward for each player in the new dataset
+average_rewards_by_name_alt2 <- shots_data_alt2 %>%
+  group_by(fullname) %>%
+  summarise(average_reward_alt2 = mean(reward)) %>%
+  arrange(desc(average_reward_alt2))
+
+# Merge the new and old average reward data
+combined_averages_alt2 <- left_join(combined_averages_alt1, average_rewards_by_name_alt2, by = "fullname")
+
+ggplot() +
+  geom_bar(data = average_rewards_by_name, aes(y = reorder(fullname, -average_reward), x = average_reward), stat="identity", fill="blue") +
+  geom_point(data = combined_averages_alt2, aes(y = fullname, x = average_reward_alt1), color="red", shape = 17, size = 3) +
+  geom_point(data = combined_averages_alt2, aes(y = fullname, x = average_reward_alt2), color="black", shape = 17, size = 3) + # New data 
+  theme_minimal() +
+  labs(title='Average Reward for Each Player (Shots Only)', y='Player', x='Average Reward') +
+  theme(legend.position="none", axis.text.y = element_text(size = 7))
+```
+
+```{r}
+# Count plot of shots taken by each player in the new dataset
+total_shots_by_player_alt2 <- filter(MIA_alt2_combined, action == 1) %>%
+  group_by(fullname) %>%
+  summarise(total_shots_alt2 = n())
+
+# Now, calculate the average shots per game for the new dataset
+# Assuming each player participates in each of the 100 simulations
+average_shots_per_game_alt2 <- total_shots_by_player_alt2 %>%
+  mutate(average_shots_alt2 = total_shots_alt2 / 100) %>%
+  arrange(desc(average_shots_alt2))
+
+# Combine the new and old average shots per game data
+combined_average_shots_alt2 <- left_join(average_shots_per_game_alt1, average_shots_per_game_alt2, by = "fullname")
+
+ggplot() +
+  geom_bar(data = average_shots_per_game, aes(y = reorder(fullname, -average_shots), x = average_shots), stat="identity", fill="blue") +
+  geom_point(data = combined_average_shots_alt2, aes(y = fullname, x = average_shots_alt1), color="red", shape = 17, size = 3) +
+  geom_point(data = combined_average_shots_alt2, aes(y = fullname, x = average_shots_alt2), color="black", shape = 17, size = 3) + 
+  theme_minimal() +
+  labs(title='Average Shots Per Game Taken by Each Player', y='Player', x='Average Shots per Game') +
+  theme(axis.text.y = element_text(size = 7),
+        axis.title.y = element_blank(),
+        legend.position="none")
+```
+```{r}
+average_shot_clock_per_play_alt2 <- MIA_alt2_combined %>%
+  filter(action != 0 | is.na(action)) %>%
+  group_by(play) %>%
+  summarise(average_shot_clock_alt2 = mean(shot_clock, na.rm = TRUE))
+
+
+ggplot() +
+  geom_smooth(data = average_shot_clock_per_play, aes(x = play, y = average_shot_clock), color = "blue", se = FALSE) +
+  geom_smooth(data = average_shot_clock_per_play_alt1, aes(x = play, y = average_shot_clock_alt1), color = "red", se = FALSE) +
+  geom_smooth(data = average_shot_clock_per_play_alt2, aes(x = play, y = average_shot_clock_alt2), color = "black") +
+  theme_minimal() +
+  labs(title = "Average Shot Clock Time at the End of Each Play",
+       x = "Play",
+       y = "Average Shot Clock Time") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+```
+
+
+
+```{r}
+
+shots_by_region_alt2 <- shots_data_alt2 %>%
+  group_by(fullname, region) %>%
+  summarise(total_shots = n()) %>%
+  mutate(average_shots = total_shots / 100) %>%
+  select(-total_shots) %>%
+  spread(key = region, value = average_shots, fill = 0)
+
+# Count the number of contested and open shots by each player and calculate the average per game
+shots_by_contested <- shots_data_alt2 %>%
+  group_by(fullname, contested) %>%
+  summarise(total_shots = n()) %>%
+  mutate(average_shots = total_shots / 100) %>%
+  select(-total_shots) %>%
+  spread(key = contested, value = average_shots, fill = 0)
+
+# Calculate the average made (reward > 0) and missed (reward == 0) shots per game for each player
+shots_made_missed <- shots_data_alt2 %>%
+  group_by(fullname) %>%
+  summarise(made = sum(reward > 0), missed = sum(reward == 0)) %>%
+  mutate(average_made = made / 100, average_missed = missed / 100) %>%
+  select(fullname, average_made, average_missed)
+
+# Combine all the dataframes
+final_table <- left_join(shots_by_region_alt2, shots_by_contested, by = "fullname") %>%
+  left_join(shots_made_missed, by = "fullname")
+
+# Add a column for average total shots per game
+final_table$average_total_shots <- final_table$average_made + final_table$average_missed
+
+# Select the order of columns to include the averages
+final_table <- final_table %>%
+  select(fullname, long2, paint, three, contested, open, average_total_shots)
+
+final_table <- final_table %>%
+  arrange(desc(average_total_shots))
+
+total_row <- final_table %>%
+  ungroup() %>%  # Ensure the data frame is not grouped
+  summarise(across(where(is.numeric), sum, na.rm = TRUE), .groups = 'drop')
+
+# Add a 'fullname' column to the total_row with the value "Total"
+total_row$fullname <- "Total"
+
+# Bind the total_row to the original final_table
+final_table_with_total <- bind_rows(final_table, total_row)
+
+# Output the table with the new total row
+final_table_with_total
+```
+
+
+
+## Policy alteration 3: This alteration we will decrease long 2 shots by 80%, increase paint shots by 20% and increase three point shots by 60%
+
+```{r}
+
+
+# Identify MIA players
+MIA_players = dat %>%
+  filter(team == "MIA") %>%
+  distinct(entity) %>%
+  pull(entity)
+
+# Identify states to alter
+# 1) ALL Midrange shots
+to_alter_1 = c(paste(MIA_players, "long2_contested", sep = "_"),
+             paste(MIA_players, "long2_open", sep = "_"))
+# 2) ALL three point shots
+to_alter_2 = c(paste(MIA_players, "paint_contested", sep = "_"),
+               paste(MIA_players, "paint_open", sep = "_"))
+
+to_alter_3 = c(paste(MIA_players, "three_contested", sep = "_"),
+               paste(MIA_players, "three_open", sep = "_"))
+  
+
+policy_change <- list(list(who_where = to_alter_1,
+                                        when = 2:3,
+                                        how_much = .2),
+                                   list(who_where = to_alter_2,
+                                        when = 1:3,
+                                        how_much = 1.2),
+                                   list(who_where = to_alter_2,
+                                        when = 1:3,
+                                        how_much = 1.6)
+                                   )
+
+# Alter the posterior draws of theta
+altered_theta_draws = alter_theta(theta_draws, 
+                                  altered_policy_rules = policy_change)
+
+# MIAMI ALTERED SIMULATIONS
+MIA_alt3_results_list <- list()
+
+
+# MIAMI SIMULATIONS
+for (iter in 1:n_sim) {
+  game_moments_MIA <- NULL
+  for (play in 1:nrow(MIA_initial_states)) {
+    if (play == 1) {
+      game_moments_MIA <- algorithm_1(
+        s_0 = MIA_initial_states[play, "state"],
+        c_0 = MIA_initial_states[play, "shot_clock"],
+        theta_draws = altered_theta_draws,
+        mu_draws = mu_draws,
+        xi_draws = xi_draws,
+        lambda_draws = lambda_MIA_draws,
+        L_dist = shot_clock_dist,
+        num_mcmc = n_draws
+      )
+    } else {
+      game_moments_MIA <- rbind(
+        game_moments_MIA,
+        algorithm_1(
+          s_0 = MIA_initial_states[play, "state"],
+          c_0 = MIA_initial_states[play, "shot_clock"],
+          theta_draws = altered_theta_draws,
+          mu_draws = mu_draws,
+          xi_draws = xi_draws,
+          lambda_draws = lambda_MIA_draws,
+          L_dist = shot_clock_dist,
+          num_mcmc = n_draws
+        )
+      )
+    }
+  }
+  MIA_alt3_results_list[[iter]] <- game_moments_MIA
+}
+
+```
+
+```{r}
+# Combine the list of data frames into one data frame for Miami
+MIA_alt3_combined_noName <- bind_rows(MIA_alt3_results_list, .id = "simulation")
+```
+
+
+```{r}
+MIA_alt3_combined_noName <- MIA_alt3_combined_noName %>% 
+  # If the 'state' is 'turnover', replace with 'turnover_turnover_turnover'
+  mutate(state = ifelse(state == "turnover", "turnover_turnover_turnover", state)) %>%
+  # Separate the 'state' column into three new columns
+  separate(state, into = c("entity", "region", "contested"), sep = "_", fill = "right") %>%
+  # Replace 'turnover_turnover_turnover' back with 'turnover' in each column
+  mutate(across(c(entity, region, contested), ~ifelse(. == "turnover", "turnover", .)))
+
+MIA_alt3_combined_noName$entity <- as.integer(replace(MIA_alt3_combined_noName$entity, MIA_alt3_combined_noName$entity == "turnover", NA))
+
+```
+
+```{r}
+MIA_alt3_combined <- MIA_alt3_combined_noName %>%
+  left_join(unique_entities_only_df %>% select(entity, firstname, lastname), by = "entity")
+```
+
+```{r}
+MIA_alt3_combined$fullname <- paste(MIA_alt3_combined$firstname, MIA_alt3_combined$lastname)
+```
+
+```{r}
+MIA_alt3_points <- MIA_alt3_combined %>%
+  group_by(simulation) %>%
+  summarize(total_points = sum(reward))
+
+plot(density(MIA_points$total_points), col = "red", 
+     main = "Simulations: MIA vs BRK",
+     xlab = "Points")
+lines(density(BRK_points$total_points))
+lines(density(MIA_alt3_points$total_points), col = "blue")
+legend("topleft", c("Brooklyn", "Miami", "Miami-alt"),
+       col = c("black", "red", "blue"),
+       lwd = 2)
+```
+
+```{r}
+shots_data_alt3 <- filter(MIA_alt3_combined, action == 1)
+
+# Bar plot of the average reward for each player in the new dataset
+average_rewards_by_name_alt3 <- shots_data_alt3 %>%
+  group_by(fullname) %>%
+  summarise(average_reward_alt3 = mean(reward)) %>%
+  arrange(desc(average_reward_alt3))
+
+# Merge the new and old average reward data
+combined_averages_alt3 <- left_join(combined_averages_alt2, average_rewards_by_name_alt3, by = "fullname")
+
+ggplot() +
+  geom_bar(data = average_rewards_by_name, aes(y = reorder(fullname, -average_reward), x = average_reward), stat="identity", fill="blue") +
+  geom_point(data = combined_averages_alt2, aes(y = fullname, x = average_reward_alt1), color="red", shape = 17, size = 3) +
+  geom_point(data = combined_averages_alt2, aes(y = fullname, x = average_reward_alt2), color="black", shape = 17, size = 3) + 
+  geom_point(data = combined_averages_alt3, aes(y = fullname, x = average_reward_alt3), color="green", shape = 17, size = 3) + 
+  theme_minimal() +
+  labs(title='       Average Reward for Each Player (Shots Only)', y='Player', x='Average Reward') +
+  theme(legend.position="none", axis.text.y = element_text(size = 7))+
+  theme(
+    axis.text.y = element_text(size = 10, face = "bold"), 
+    axis.title.y = element_blank(), 
+    legend.position = "none" 
+  )
+```
+
+```{r}
+# Count plot of shots taken by each player in the new dataset
+total_shots_by_player_alt3 <- filter(MIA_alt3_combined, action == 1) %>%
+  group_by(fullname) %>%
+  summarise(total_shots_alt3 = n())
+
+# Now, calculate the average shots per game for the new dataset
+# Assuming each player participates in each of the 100 simulations
+average_shots_per_game_alt3 <- total_shots_by_player_alt3 %>%
+  mutate(average_shots_alt3 = total_shots_alt3 / 100) %>%
+  arrange(desc(average_shots_alt3))
+
+# Combine the new and old average shots per game data
+combined_average_shots_alt3 <- left_join(average_shots_per_game_alt2, average_shots_per_game_alt3, by = "fullname")
+
+ggplot() +
+  geom_bar(data = average_shots_per_game, aes(y = reorder(fullname, average_shots), x = average_shots), stat="identity", fill="blue") +
+  geom_point(data = combined_average_shots_alt2, aes(y = fullname, x = average_shots_alt1), color="red", shape = 17, size = 3) +
+  geom_point(data = combined_average_shots_alt2, aes(y = fullname, x = average_shots_alt2), color="black", shape = 17, size = 3) + 
+  geom_point(data = combined_average_shots_alt3, aes(y = fullname, x = average_shots_alt3), color="green", shape = 17, size = 3) +
+  theme_minimal() +
+  labs(title='               Average Shots Per Game Taken by Each Player', y='Player', x='Average Shots per Game') +
+  theme(axis.text.y = element_text(size = 7),
+        axis.title.y = element_blank(),
+        legend.position="none")+
+  theme(
+    axis.text.y = element_text(size = 10, face = "bold"),
+    axis.title.y = element_blank(), 
+    legend.position = "none" 
+  )
+```
+
+```{r}
+average_shot_clock_per_play_alt3 <- MIA_alt3_combined %>%
+  filter(action != 0 | is.na(action)) %>%
+  group_by(play) %>%
+  summarise(average_shot_clock_alt3 = mean(shot_clock, na.rm = TRUE))
+
+
+ggplot() +
+  geom_smooth(data = average_shot_clock_per_play, aes(x = play, y = average_shot_clock), color = "blue", se = FALSE) +
+  geom_smooth(data = average_shot_clock_per_play_alt1, aes(x = play, y = average_shot_clock_alt1), color = "red", se = FALSE) +
+  geom_smooth(data = average_shot_clock_per_play_alt2, aes(x = play, y = average_shot_clock_alt2), color = "black", se = FALSE) +
+  geom_smooth(data = average_shot_clock_per_play_alt3, aes(x = play, y = average_shot_clock_alt3), color = "green") +
+  theme_minimal() +
+  labs(title = "Average Shot Clock Time at the End of Each Play",
+       x = "Play",
+       y = "Average Shot Clock Time") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+```
+
+
+
+```{r}
+
+shots_by_region_alt3 <- shots_data_alt3 %>%
+  group_by(fullname, region) %>%
+  summarise(total_shots = n()) %>%
+  mutate(average_shots = total_shots / 100) %>%
+  select(-total_shots) %>%
+  spread(key = region, value = average_shots, fill = 0)
+
+# Count the number of contested and open shots by each player and calculate the average per game
+shots_by_contested <- shots_data_alt3 %>%
+  group_by(fullname, contested) %>%
+  summarise(total_shots = n()) %>%
+  mutate(average_shots = total_shots / 100) %>%
+  select(-total_shots) %>%
+  spread(key = contested, value = average_shots, fill = 0)
+
+# Calculate the average made (reward > 0) and missed (reward == 0) shots per game for each player
+shots_made_missed <- shots_data_alt3 %>%
+  group_by(fullname) %>%
+  summarise(made = sum(reward > 0), missed = sum(reward == 0)) %>%
+  mutate(average_made = made / 100, average_missed = missed / 100) %>%
+  select(fullname, average_made, average_missed)
+
+# Combine all the dataframes
+final_table <- left_join(shots_by_region_alt3, shots_by_contested, by = "fullname") %>%
+  left_join(shots_made_missed, by = "fullname")
+
+# Add a column for average total shots per game
+final_table$average_total_shots <- final_table$average_made + final_table$average_missed
+
+# Select the order of columns to include the averages
+final_table <- final_table %>%
+  select(fullname, long2, paint, three, contested, open, average_total_shots)
+
+final_table <- final_table %>%
+  arrange(desc(average_total_shots))
+
+total_row <- final_table %>%
+  ungroup() %>%  # Ensure the data frame is not grouped
+  summarise(across(where(is.numeric), sum, na.rm = TRUE), .groups = 'drop')
+
+# Add a 'fullname' column to the total_row with the value "Total"
+total_row$fullname <- "Total"
+
+# Bind the total_row to the original final_table
+final_table_with_total <- bind_rows(final_table, total_row)
+
+# Output the table with the new total row
+final_table_with_total
+```
+
+
+
+
+## Gridsearch
+
+```{r}
+calculate_score <- function(MIA_points_alt) {
+  # Calculate the average points scored across all simulations
+  avg_score <- mean(MIA_points_alt, na.rm = TRUE)
+  return(avg_score)
+}
+```
+
+
+```{r}
+n_sim_test <- 5
+run_simulation <- function(params) {
+  MIA_players <- dat %>%
+    filter(team == "MIA") %>%
+    distinct(entity) %>%
+    pull(entity)
+
+  to_alter_1 <- c(paste(MIA_players, "long2_contested", sep = "_"),
+                  paste(MIA_players, "long2_open", sep = "_"))
+  to_alter_2 <- c(paste(MIA_players, "paint_contested", sep = "_"),
+                  paste(MIA_players, "paint_open", sep = "_"))
+  to_alter_3 <- c(paste(MIA_players, "three_contested", sep = "_"),
+                  paste(MIA_players, "three_open", sep = "_"))
+
+  policy_change <- list(
+    list(who_where = to_alter_1, when = 2:3, how_much = params$long2_contested),
+    list(who_where = to_alter_1, when = 1:3, how_much = params$long2_open),
+    list(who_where = to_alter_2, when = 1:3, how_much = params$paint_contested),
+    list(who_where = to_alter_2, when = 1:3, how_much = params$paint_open),
+    list(who_where = to_alter_3, when = 1:3, how_much = params$three_contested),
+    list(who_where = to_alter_3, when = 1:3, how_much = params$three_open)
+  )
+
+  altered_theta_draws <- alter_theta(theta_draws, altered_policy_rules = policy_change)
+
+  MIA_points_alt = NA
+  for (iter in 1:n_sim_test) {
+    for (play in 1:nrow(MIA_initial_states)) {
+      if (play == 1) {
+        game_moments_MIA = algorithm_1(
+          s_0 = MIA_initial_states[play, "state"],
+          c_0 = MIA_initial_states[play, "shot_clock"],
+          theta_draws = altered_theta_draws,
+          mu_draws = mu_draws,
+          xi_draws = xi_draws,
+          lambda_draws = lambda_MIA_draws,
+          L_dist = shot_clock_dist,
+          num_mcmc = n_draws
+        )
+      } else {
+        game_moments_MIA = rbind(
+          game_moments_MIA,
+          algorithm_1(
+            s_0 = MIA_initial_states[play, "state"],
+            c_0 = MIA_initial_states[play, "shot_clock"],
+            theta_draws = altered_theta_draws,
+            mu_draws = mu_draws,
+            xi_draws = xi_draws,
+            lambda_draws = lambda_MIA_draws,
+            L_dist = shot_clock_dist,
+            num_mcmc = n_draws
+          )
+        )
+      }
+    }
+    MIA_points_alt[iter] = sum(game_moments_MIA$reward)
+  }
+
+  return(calculate_score(MIA_points_alt))
+}
+```
+
+
+```{r}
+range_values <- seq(from = 0.8, to = 1.2, by = 0.2)
+
+param_grid <- expand.grid(
+  long2_contested = range_values,
+  long2_open = range_values,
+  paint_contested = range_values,
+  paint_open = range_values,
+  three_contested = range_values,
+  three_open = range_values
+)
+```
+
+```{r}
+# Initialize the simulation_results dataframe
+simulation_results <- data.frame(matrix(ncol = length(names(param_grid)) + 1, nrow = 0))
+colnames(simulation_results) <- c(names(param_grid), "Score")
+```
+
+
+
+
+
+```{r}
+# Modified loop for running simulations and storing results
+for (i in 1:nrow(param_grid)) {
+  params <- param_grid[i, ]
+  tryCatch(
+    {
+      score <- run_simulation(params)
+      simulation_results <- rbind(simulation_results, c(params, Score = score))
+      cat("Iteration:", i, "\n")
+    },
+    error = function(e) {
+      cat("Error in iteration", i, "with hyperparameters:")
+      print(params)
+      cat("Error message:", conditionMessage(e), "\n")
+    }
+  )
+}
+```
+
+
+
+```{r}
+best_score <- -Inf
+best_params <- NULL
+for (i in 1:nrow(simulation_results)) {
+  if (simulation_results$Score[i] > best_score) {
+    best_score <- simulation_results$Score[i]
+    best_params <- simulation_results[i, 1:length(names(param_grid))]
+  }
+}
+
+```
+
+```{r}
+print(best_params)
+```
+
+
+
+
 
