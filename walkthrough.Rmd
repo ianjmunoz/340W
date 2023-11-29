@@ -1,7 +1,7 @@
 ---
 title: "Markov Decision Processes with Dynamic Transition Probabilities: An Analysis of Shooting Strategies in Basketball"
 subtitle: "A Simplified Walkthrough in R"
-author: "Nathan Sandholtz and Luke Bornn"
+author: "Nathan Sandholtz and Luke Bornn and Ian Munoz"
 date: "3/2/2020"
 output: pdf_document
 ---
